@@ -262,6 +262,20 @@ def test_multi_item_publication(
     assert len(all_sent_notifications) == expected_msg_count
 
 
+def test_truncated_output_direct_invalid_json(event, statedb):
+    # Provide a truncated/invalid JSON string directly in the event output
+    event["detail"]["output"] = "{invalid json"
+    event["detail"]["status"] = "SUCCEEDED"
+    update_state(event, {})
+    items = statedb.get_dbitems(payload_ids=[EVENT_PAYLOAD_ID])
+    assert len(items) == 1
+    assert items[0]["state_updated"].startswith("COMPLETED")
+    assert items[0]["output"] is None
+    # The absence of an error and the 'COMPLETED' state implicitly confirm
+    # that the invalid output was handled (i.e., set to None) and did not prevent
+    # the overall state update.
+
+
 # TODO: test URL input
 # TODO: test URL output
 # TODO: test bad payloads

@@ -66,11 +66,12 @@ class Execution:
             )
 
             eout = event["detail"].get("output", None)
-            output = (
-                PayloadManager(CirrusPayload.from_event(json.loads(eout)))
-                if eout
-                else None
-            )
+            output = None
+            if eout:
+                try:
+                    output = PayloadManager(CirrusPayload.from_event(json.loads(eout)))
+                except json.JSONDecodeError:
+                    logger.warning("Event output is not valid JSON, likely truncated.")
 
             status = event["detail"]["status"]
             error = None
