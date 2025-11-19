@@ -10,7 +10,12 @@ from cirrus.lib.enums import SfnStatus
 from cirrus.lib.events import WorkflowEventManager
 from cirrus.lib.logging import get_task_logger
 from cirrus.lib.payload_manager import PayloadManager
-from cirrus.lib.utils import SNSPublisher, SQSPublisher, cold_start
+from cirrus.lib.utils import (
+    SNSPublisher,
+    SQSPublisher,
+    cold_start,
+    extract_event_records,
+)
 
 cold_start()
 
@@ -191,4 +196,5 @@ def lambda_handler(
     wfem: WorkflowEventManager,
 ) -> None:
     logger.debug(event)
-    Execution.from_event(event).update_state(wfem)
+    for evt in extract_event_records(event):
+        Execution.from_event(evt).update_state(wfem)
