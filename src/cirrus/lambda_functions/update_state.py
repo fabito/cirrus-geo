@@ -10,7 +10,12 @@ from cirrus.lib.enums import SfnStatus
 from cirrus.lib.events import WorkflowEventManager
 from cirrus.lib.logging import get_task_logger
 from cirrus.lib.payload_manager import PayloadManager
-from cirrus.lib.utils import SNSPublisher, SQSPublisher, cold_start
+from cirrus.lib.utils import (
+    SNSPublisher,
+    SQSPublisher,
+    cold_start,
+    extract_event_records,
+)
 
 cold_start()
 
@@ -66,9 +71,15 @@ class Execution:
             )
 
             eout = event["detail"].get("output", None)
+            output_data = None
+            if eout:
+                try:
+                    output_data = json.loads(eout)
+                except json.JSONDecodeError:
+                    logger.warning("Event output is not valid JSON, likely truncated.")
             output = (
-                PayloadManager(CirrusPayload.from_event(json.loads(eout)))
-                if eout
+                PayloadManager(CirrusPayload.from_event(output_data))
+                if output_data
                 else None
             )
 
@@ -203,3 +214,15 @@ def lambda_handler(
 ) -> None:
     logger.debug(event)
     Execution.from_event(event).update_state(wfem)
+
+
+@WorkflowEventManager.with_wfem(logger=logger)
+def messaging_lambda_handler(
+    event: dict[str, Any],
+    context: Any,
+    *,
+    wfem: WorkflowEventManager,
+) -> None:
+    logger.debug(event)
+    for evt in extract_event_records(event):
+        Execution.from_event(evt).update_state(wfem)

@@ -1,3 +1,4 @@
+import copy
 import json
 import sys
 
@@ -8,7 +9,10 @@ import pytest
 from moto.core.models import DEFAULT_ACCOUNT_ID
 from moto.sns.models import sns_backends
 
-from cirrus.lambda_functions.update_state import get_execution_error
+from cirrus.lambda_functions.update_state import (
+    get_execution_error,
+    messaging_lambda_handler,
+)
 from cirrus.lambda_functions.update_state import lambda_handler as update_state
 from cirrus.lib.enums import SfnStatus
 from cirrus.lib.events import WorkflowEvent
@@ -260,6 +264,80 @@ def test_multi_item_publication(
     sns_backend = sns_backends[DEFAULT_ACCOUNT_ID]["us-east-1"]
     all_sent_notifications = sns_backend.topics[publish_topic].sent_notifications
     assert len(all_sent_notifications) == expected_msg_count
+
+
+def test_truncated_output_direct_invalid_json(event, statedb):
+    # Provide a truncated/invalid JSON string directly in the event output
+    event["detail"]["output"] = "{invalid json"
+    event["detail"]["status"] = "SUCCEEDED"
+    update_state(event, {})
+    items = statedb.get_dbitems(payload_ids=[EVENT_PAYLOAD_ID])
+    assert len(items) == 1
+    assert items[0]["state_updated"].startswith("COMPLETED")
+    assert items[0]["output"] is None
+    # The absence of an error and the 'COMPLETED' state implicitly confirm
+    # that the invalid output was handled (i.e., set to None) and did not prevent
+    # the overall state update.
+
+
+def _sqs_event_from_lambda_event(evt: dict) -> dict:
+    """Wrap a standard lambda event in an SQS Records envelope as expected by
+    messaging_lambda_handler via extract_event_records.
+    """
+    return {"Records": [{"body": json.dumps(evt)}]}
+
+
+def test_messaging_lambda_handler_single_success(event, statedb):
+    # Provide output so workflow is considered completed and published
+    event["detail"]["output"] = event["detail"]["input"]
+    sqs_event = _sqs_event_from_lambda_event(event)
+
+    messaging_lambda_handler(sqs_event, {})
+
+    items = statedb.get_dbitems(payload_ids=[EVENT_PAYLOAD_ID])
+    assert len(items) == 1
+    assert items[0]["state_updated"].startswith("COMPLETED")
+
+
+def test_messaging_lambda_handler_failed(event, statedb):
+    event["detail"]["status"] = "FAILED"
+    event["detail"]["error"] = "UnknownError"
+    event["detail"]["cause"] = (
+        '{"errorMessage": "Something bad", "errorType": "UnknownError"}'
+    )
+    sqs_event = _sqs_event_from_lambda_event(event)
+
+    messaging_lambda_handler(sqs_event, {})
+
+    items = statedb.get_dbitems(payload_ids=[EVENT_PAYLOAD_ID])
+    assert len(items) == 1
+    assert items[0]["state_updated"].startswith("FAILED")
+    assert "UnknownError" in items[0]["last_error"]
+
+
+def test_messaging_lambda_handler_multiple_records(statedb, event):
+    # First successful event
+    e1 = copy.deepcopy(event)
+    e1["detail"]["output"] = e1["detail"]["input"]
+
+    # Second event with different payload id
+    e2 = copy.deepcopy(event)
+    new_payload_id = EVENT_PAYLOAD_ID + "-2"
+    # mutate the input JSON string to include new id
+    e2_input_payload = json.loads(e2["detail"]["input"])
+    e2_input_payload["id"] = new_payload_id
+    e2["detail"]["input"] = json.dumps(e2_input_payload)
+    e2["detail"]["output"] = e2["detail"]["input"]
+
+    sqs_event = {"Records": [{"body": json.dumps(e1)}, {"body": json.dumps(e2)}]}
+
+    messaging_lambda_handler(sqs_event, {})
+
+    items = statedb.get_dbitems(payload_ids=[EVENT_PAYLOAD_ID, new_payload_id])
+    # Expect both payloads represented
+    assert len(items) == 2
+    for item in items:
+        assert item["state_updated"].startswith("COMPLETED")
 
 
 # TODO: test URL input
